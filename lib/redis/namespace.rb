@@ -201,33 +201,11 @@ class Redis
       "ping"             => [],
       "time"             => [],
     }
-    ADMINISTRATIVE_COMMANDS = {
-      "bgrewriteaof"     => [],
-      "bgsave"           => [],
-      "config"           => [],
-      "dbsize"           => [],
-      "flushall"         => [],
-      "flushdb"          => [],
-      "info"             => [],
-      "lastsave"         => [],
-      "quit"             => [],
-      "randomkey"        => [],
-      "save"             => [],
-      "script"           => [],
-      "select"           => [],
-      "shutdown"         => [],
-      "slaveof"          => [],
-    }
-
-    DEPRECATED_COMMANDS = [
-      ADMINISTRATIVE_COMMANDS
-    ].compact.reduce(:merge)
 
     COMMANDS = [
       NAMESPACED_COMMANDS,
       TRANSACTION_COMMANDS,
       HELPER_COMMANDS,
-      ADMINISTRATIVE_COMMANDS,
     ].compact.reduce(:merge)
 
     # Support 1.8.7 by providing a namespaced reference to Enumerable::Enumerator
@@ -240,31 +218,14 @@ class Redis
     def initialize(namespace, options = {})
       @namespace = namespace
       @redis = options[:redis] || Redis.current
-      @warning = !!options.fetch(:warning) do
-                   !ENV['REDIS_NAMESPACE_QUIET']
-                 end
-      @deprecations = !!options.fetch(:deprecations) do
-                        ENV['REDIS_NAMESPACE_DEPRECATIONS']
-                      end
-      @has_new_client_method = @redis.respond_to?(:_client)
-    end
-
-    def deprecations?
-      @deprecations
-    end
-
-    def warning?
-      @warning
-    end
-
-    def client
-      warn("The client method is deprecated as of redis-rb 4.0.0, please use the new _client" +
-            "method instead. Support for the old method will be removed in redis-namespace 2.0.") if @has_new_client_method && deprecations?
-      _client
     end
 
     def _client
-      @has_new_client_method ? @redis._client : @redis.client # for redis-4.0.0
+      @redis._client
+    end
+
+    def connection
+      @redis.connection.tap { |info| info[:namespace] = @namespace }
     end
 
     # Ruby defines a now deprecated type method so we need to override it here
@@ -273,14 +234,14 @@ class Redis
       call_with_namespace(:type, key)
     end
 
-    alias_method :self_respond_to?, :respond_to?
+    # alias_method :self_respond_to?, :respond_to?
 
     # emulate Ruby 1.9+ and keep respond_to_missing? logic together.
-    def respond_to?(command, include_private=false)
-      return !deprecations? if DEPRECATED_COMMANDS.include?(command.to_s.downcase)
+    # def respond_to?(command, include_private=false)
+    #   return !deprecations? if DEPRECATED_COMMANDS.include?(command.to_s.downcase)
 
-      respond_to_missing?(command, include_private) or super
-    end
+    #   respond_to_missing?(command, include_private) or super
+    # end
 
     def keys(query = nil)
       call_with_namespace(:keys, query || '*')
@@ -307,10 +268,6 @@ class Redis
       @namespace
     end
 
-    def connection
-      @redis.connection.tap { |info| info[:namespace] = @namespace }
-    end
-
     def exec
       call_with_namespace(:exec)
     end
@@ -319,24 +276,23 @@ class Redis
       call_with_namespace(:eval, *args)
     end
 
-    ADMINISTRATIVE_COMMANDS.keys.each do |command|
-      define_method(command) do |*args, &block|
-        raise NoMethodError if deprecations?
+    # ADMINISTRATIVE_COMMANDS.keys.each do |command|
+    #   define_method(command) do |*args, &block|
+    #     raise NoMethodError if deprecations?
 
-        if warning?
-          warn("Passing '#{command}' command to redis as is; " +
-               "administrative commands cannot be effectively namespaced " +
-               "and should be called on the redis connection directly; " +
-               "passthrough has been deprecated and will be removed in " +
-               "redis-namespace 2.0 (at #{call_site})"
-               )
-        end
-        call_with_namespace(command, *args, &block)
-      end
-    end
+    #     if warning?
+    #       warn("Passing '#{command}' command to redis as is; " +
+    #            "administrative commands cannot be effectively namespaced " +
+    #            "and should be called on the redis connection directly; " +
+    #            "passthrough has been deprecated and will be removed in " +
+    #            "redis-namespace 2.0 (at #{call_site})"
+    #            )
+    #     end
+    #     call_with_namespace(command, *args, &block)
+    #   end
+    # end
 
     COMMANDS.keys.each do |command|
-      next if ADMINISTRATIVE_COMMANDS.include?(command)
       next if method_defined?(command)
 
       define_method(command) do |*args, &block|
@@ -344,43 +300,30 @@ class Redis
       end
     end
 
-    def method_missing(command, *args, &block)
-      normalized_command = command.to_s.downcase
+    # def method_missing(command, *args, &block)
+    #   normalized_command = command.to_s.downcase
 
-      if COMMANDS.include?(normalized_command)
-        send(normalized_command, *args, &block)
-      elsif @redis.respond_to?(normalized_command) && !deprecations?
-        # blind passthrough is deprecated and will be removed in 2.0
-        # redis-namespace does not know how to handle this command.
-        # Passing it to @redis as is, where redis-namespace shows
-        # a warning message if @warning is set.
-        if warning?
-          warn("Passing '#{command}' command to redis as is; blind " +
-               "passthrough has been deprecated and will be removed in " +
-               "redis-namespace 2.0 (at #{call_site})")
-        end
-        @redis.send(command, *args, &block)
-      else
-        super
-      end
-    end
+    #   if COMMANDS.include?(normalized_command)
+    #     send(normalized_command, *args, &block)
+    #   elsif @redis.respond_to?(normalized_command) && !deprecations?
+    #     # blind passthrough is deprecated and will be removed in 2.0
+    #     # redis-namespace does not know how to handle this command.
+    #     # Passing it to @redis as is, where redis-namespace shows
+    #     # a warning message if @warning is set.
+    #     if warning?
+    #       warn("Passing '#{command}' command to redis as is; blind " +
+    #            "passthrough has been deprecated and will be removed in " +
+    #            "redis-namespace 2.0 (at #{call_site})")
+    #     end
+    #     @redis.send(command, *args, &block)
+    #   else
+    #     super
+    #   end
+    # end
 
     def inspect
       "<#{self.class.name} v#{VERSION} with client v#{Redis::VERSION} "\
       "for #{@redis.id}/#{@namespace}>"
-    end
-
-    def respond_to_missing?(command, include_all=false)
-      normalized_command = command.to_s.downcase
-
-      case
-      when COMMANDS.include?(normalized_command)
-        true
-      when !deprecations? && redis.respond_to?(command, include_all)
-        true
-      else
-        defined?(super) && super
-      end
     end
 
     def call_with_namespace(command, *args, &block)
